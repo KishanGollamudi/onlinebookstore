@@ -1,3 +1,5 @@
+name: CI/CD Pipeline - Maven → SonarQube → Nexus → Tomcat
+
 on:
   push:
     branches:
@@ -9,13 +11,13 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      SONAR_HOST_URL: ${{http://54.91.247.40:9000 }}           # Example: http://54.200.10.20:9000
-      SONAR_TOKEN: ${{ sqa_ece2e56ad8c5e7dc8c753e01a41f745d77fb3165 }}                 # Example: sqp_abcd1234efgh5678
-      NEXUS_URL: http://3.89.186.97:8081                   # Example Nexus URL
+      SONAR_HOST_URL: http://54.91.247.40:9000              # ✅ Corrected syntax
+      SONAR_TOKEN: sqa_ece2e56ad8c5e7dc8c753e01a41f745d77fb3165
+      NEXUS_URL: http://3.89.186.97:8081
       NEXUS_REPO: maven-releases
       NEXUS_GROUP: com/app/onlinebookstore
       NEXUS_ARTIFACT: onlinebookstore
-      TOMCAT_URL:http://54.163.54.210:8080/manager/text        # Example Tomcat URL
+      TOMCAT_URL: http://54.163.54.210:8080/manager/text    # ✅ Space fixed after colon
 
     steps:
       - name: 📦 Checkout Code
@@ -40,8 +42,8 @@ jobs:
           mvn clean verify sonar:sonar \
             -DskipTests \
             -Dsonar.projectKey=OnlineBookstore \
-            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+            -Dsonar.host.url=${SONAR_HOST_URL} \
+            -Dsonar.login=${SONAR_TOKEN}
 
       - name: ⚙️ Build WAR File
         run: |
@@ -59,7 +61,7 @@ jobs:
           VERSION="0.0.${{ github.run_number }}"
           echo "📦 Uploading WAR to Nexus version $VERSION ..."
           curl -u ${NEXUS_USER}:${NEXUS_PASS} --upload-file "$WAR_FILE" \
-            "${{ env.NEXUS_URL }}/repository/${{ env.NEXUS_REPO }}/${{ env.NEXUS_GROUP }}/${{ env.NEXUS_ARTIFACT }}/${VERSION}/${{ env.NEXUS_ARTIFACT }}-${VERSION}.war"
+            "${NEXUS_URL}/repository/${NEXUS_REPO}/${NEXUS_GROUP}/${NEXUS_ARTIFACT}/${VERSION}/${NEXUS_ARTIFACT}-${VERSION}.war"
           echo "✅ Uploaded successfully."
 
       - name: 🚀 Deploy WAR to Tomcat (Force Clean)
@@ -75,7 +77,7 @@ jobs:
 
           echo "🔍 Fetching latest WAR from Nexus..."
           DOWNLOAD_URL=$(curl -s -u ${NEXUS_USER}:${NEXUS_PASS} \
-            "${{ env.NEXUS_URL }}/service/rest/v1/search/assets?repository=${{ env.NEXUS_REPO }}" \
+            "${NEXUS_URL}/service/rest/v1/search/assets?repository=${NEXUS_REPO}" \
             | grep -oP '"downloadUrl"\s*:\s*"[^"]*onlinebookstore-[0-9.]+\.war' | tail -1 | cut -d'"' -f4)
 
           if [ -z "$DOWNLOAD_URL" ]; then
@@ -88,21 +90,20 @@ jobs:
           WAR_FILE=$(basename "$DOWNLOAD_URL")
 
           echo "🧹 Undeploying old application..."
-          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} "${{ env.TOMCAT_URL }}/undeploy?path=/${APP_NAME}" || true
+          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} "${TOMCAT_URL}/undeploy?path=/${APP_NAME}" || true
           sleep 5
 
           echo "🧼 Cleaning Tomcat cache directories..."
-          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} "${{ env.TOMCAT_URL }}/expire?path=/${APP_NAME}" || true
-          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} "${{ env.TOMCAT_URL }}/reload?path=/${APP_NAME}" || true
+          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} "${TOMCAT_URL}/expire?path=/${APP_NAME}" || true
+          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} "${TOMCAT_URL}/reload?path=/${APP_NAME}" || true
 
           echo "🚀 Deploying fresh WAR to Tomcat..."
           curl -u ${TOMCAT_USER}:${TOMCAT_PASS} --upload-file "$WAR_FILE" \
-            "${{ env.TOMCAT_URL }}/deploy?path=/${APP_NAME}&update=true"
+            "${TOMCAT_URL}/deploy?path=/${APP_NAME}&update=true"
 
           echo "✅ Deployment completed successfully!"
 
       - name: 🔎 Verify Deployment
-        id: verify
         run: |
           sleep 15
           STATUS=$(curl -o /dev/null -s -w "%{http_code}" http://18.216.0.11:8080/onlinebookstore/)
