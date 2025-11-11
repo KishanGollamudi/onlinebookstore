@@ -11,13 +11,13 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      SONAR_HOST_URL: http://54.91.247.40:9000              # ✅ Corrected syntax
+      SONAR_HOST_URL: http://54.91.247.40:9000
       SONAR_TOKEN: sqa_ece2e56ad8c5e7dc8c753e01a41f745d77fb3165
       NEXUS_URL: http://3.89.186.97:8081
       NEXUS_REPO: maven-releases
       NEXUS_GROUP: com/app/onlinebookstore
       NEXUS_ARTIFACT: onlinebookstore
-      TOMCAT_URL: http://54.163.54.210:8080/manager/text    # ✅ Space fixed after colon
+      TOMCAT_URL: http://54.163.54.210:8080/manager/text
 
     steps:
       - name: 📦 Checkout Code
@@ -105,11 +105,27 @@ jobs:
 
       - name: 🔎 Verify Deployment
         run: |
+          echo "⏳ Waiting for Tomcat to finish deploying WAR..."
           sleep 60
-          STATUS=$(curl -o /dev/null -s -w "%{http_code}" http://18.216.0.11:8080/onlinebookstore/)
-          if [ "$STATUS" -eq 200 ]; then
-            echo "✅ App is live with the latest code!"
-          else
-            echo "⚠️ App returned status $STATUS"
-            exit 1
-          fi
+
+          APP_URL="http://54.163.54.210:8080/onlinebookstore/"
+          ATTEMPTS=0
+          MAX_ATTEMPTS=5
+
+          until [ $ATTEMPTS -ge $MAX_ATTEMPTS ]
+          do
+            STATUS=$(curl -m 15 -o /dev/null -s -w "%{http_code}" "$APP_URL")
+            echo "Attempt $((ATTEMPTS+1)): HTTP status $STATUS"
+
+            if [ "$STATUS" -eq 200 ]; then
+              echo "✅ App is live with the latest code!"
+              exit 0
+            fi
+
+            ATTEMPTS=$((ATTEMPTS+1))
+            echo "⚠️ App not ready yet. Retrying in 20 seconds..."
+            sleep 20
+          done
+
+          echo "❌ App did not respond with 200 OK after $MAX_ATTEMPTS attempts."
+          exit 1
