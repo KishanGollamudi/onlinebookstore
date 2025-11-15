@@ -82,7 +82,7 @@ EOF
         stage('Push to DockerHub') {
             steps {
                 echo "Pushing image to DockerHub..."
-                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-user', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
                     sh """
                         echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
                         docker push ${DOCKER_IMAGE}:${VERSION}
