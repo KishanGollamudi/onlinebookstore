@@ -1,59 +1,62 @@
 pipeline {
     agent any
 
+    environment {
+        SONARQUBE_URL = 'http://sonar:9000'
+        NEXUS_URL     = 'http://nexus:8081'
+        DOCKER_IMAGE  = "kishangollamudi/onlinebookstore"
+        VERSION       = "${env.BUILD_NUMBER}"
+    }
+
     tools {
         maven 'Maven-3'
-    }
-
-    environment {
-        SONARQUBE_ENV = 'My-Sonar'
-    }
-
-    options {
-        timeout(time: 60, unit: 'MINUTES')
-        skipDefaultCheckout(true)
+        jdk 'JDK-21'
     }
 
     stages {
 
         stage('Checkout Code') {
             steps {
+                echo "Checking out repository..."
                 checkout scm
+            }
+        }
+
+        stage('Build & Unit Test') {
+            steps {
+                echo "Running Maven build..."
+                sh "mvn clean package"
+            }
+            post {
+                always {
+                    junit '**/target/surefire-reports/*.xml'
+                }
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv("${env.SONARQUBE_ENV}") {
+                echo "Running SonarQube Analysis..."
+                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     sh """
-                        mvn clean verify sonar:sonar \
+                        mvn sonar:sonar \
                         -Dsonar.projectKey=onlinebookstore \
-                        -Dsonar.host.url=http://sonar:9000
+                        -Dsonar.host.url=${SONARQUBE_URL} \
+                        -Dsonar.login=${SONAR_TOKEN}
                     """
                 }
             }
         }
 
-        stage('Quality Gate') {
+        stage('Upload WAR to Nexus') {
             steps {
-                timeout(time: 10, unit: 'MINUTES') {
-                    waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-
-        stage('Build WAR with Maven') {
-            steps {
-                sh "mvn clean package"
-            }
-        }
-
-        stage('Upload Artifact to Nexus') {
-            steps {
+                echo "Uploading artifact to Nexus Repository..."
                 withCredentials([usernamePassword(credentialsId: 'nexus', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
                     sh """
-                        curl -v -u $NEXUS_USER:$NEXUS_PASS --upload-file target/onlinebookstore.war \
-                        http://nexus:8081/repository/maven-releases/onlinebookstore/onlinebookstore.war
+                        mvn deploy -DskipTests \
+                        -Dnexus.user=${NEXUS_USER} \
+                        -Dnexus.pass=${NEXUS_PASS} \
+                        -s settings.xml
                     """
                 }
             }
@@ -61,22 +64,34 @@ pipeline {
 
         stage('Build Docker Image') {
             steps {
+                echo "Building Docker image..."
                 script {
-                    sh "docker build -t onlinebookstore:v1 ."
+                    docker.build("${DOCKER_IMAGE}:${VERSION}")
                 }
             }
         }
 
-        stage('Push Docker Image to DockerHub') {
+        stage('Push Docker Image to Docker Hub') {
             steps {
+                echo "Pushing Docker image to DockerHub..."
+
                 withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+
                     sh """
-                        echo $DH_PASS | docker login -u $DH_USER --password-stdin
-                        docker tag onlinebookstore:v1 $DH_USER/onlinebookstore:v1
-                        docker push $DH_USER/onlinebookstore:v1
+                        echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
+                        docker push ${DOCKER_IMAGE}:${VERSION}
+                        docker tag ${DOCKER_IMAGE}:${VERSION} ${DOCKER_IMAGE}:latest
+                        docker push ${DOCKER_IMAGE}:latest
                     """
                 }
             }
+        }
+    }
+
+    post {
+        always {
+            echo "Cleaning workspace..."
+            cleanWs()
         }
     }
 }
