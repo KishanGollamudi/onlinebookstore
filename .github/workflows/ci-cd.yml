@@ -1,8 +1,8 @@
-name: CI/CD Pipeline - Maven → SonarQube → RAW Nexus → Tomcat
+name: CI/CD Pipeline - Maven → SonarQube → Nexus RAW → Tomcat
 
 on:
   push:
-    branches: 
+    branches:
       - main
   workflow_dispatch:
 
@@ -15,26 +15,26 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       NEXUS_URL: http://52.2.192.208:8081
-      NEXUS_REPO: java  # RAW repo name
+      NEXUS_REPO: java   # RAW REPO
+      NEXUS_USER: ${{ secrets.NEXUS_USER }}
+      NEXUS_PASS: ${{ secrets.NEXUS_PASS }}
 
       TOMCAT_URL: http://52.2.192.208:8080/manager/text
+      TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+      TOMCAT_PASS: ${{ secrets.TOMCAT_PASS }}
+
+      ARTIFACT_NAME: onlinebookstore
 
     steps:
 
-      # ------------------------
-      #  CHECKOUT
-      # ------------------------
-      - name: 📦 Checkout Repository
+      - name: 📦 Checkout Code
         uses: actions/checkout@v4
 
-      # ------------------------
-      #  JAVA
-      # ------------------------
       - name: ☕ Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: 17
+          distribution: 'temurin'
+          java-version: '17'
 
       - name: 🧰 Cache Maven Dependencies
         uses: actions/cache@v4
@@ -44,102 +44,88 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-maven-
 
-      # ------------------------
-      #  SONARQUBE
-      # ------------------------
-      - name: 🔍 SonarQube Code Analysis
+      - name: 🔍 SonarQube Analysis
         run: |
           mvn clean verify sonar:sonar \
-            -DskipTests \
             -Dsonar.projectKey=OnlineBookstore \
             -Dsonar.host.url=${SONAR_HOST_URL} \
-            -Dsonar.login=${SONAR_TOKEN}
+            -Dsonar.login=${SONAR_TOKEN} \
+            -DskipTests
 
-      # ------------------------
-      #  BUILD WAR
-      # ------------------------
-      - name: ⚙️ Build WAR Package
+      - name: ⚙️ Build WAR File
         run: |
           mvn clean package -DskipTests
-          echo "WAR file created:"
+          echo "WAR files found:"
           ls -lh target/*.war
 
-      # ------------------------
-      #  UPLOAD TO NEXUS (RAW HOSTED)
-      # ------------------------
       - name: ⬆️ Upload WAR to Nexus RAW Repo
-        env:
-          NEXUS_USER: ${{ secrets.NEXUS_USER }}
-          NEXUS_PASS: ${{ secrets.NEXUS_PASS }}
         run: |
           set -e
           WAR_FILE=$(ls target/*.war | head -1)
           VERSION="0.0.${{ github.run_number }}"
+          FILE_NAME="${ARTIFACT_NAME}-${VERSION}.war"
 
-          echo "Uploading $WAR_FILE to RAW Nexus Repo..."
+          echo "📤 Uploading WAR → Nexus RAW repo..."
+          echo "Uploading as: $FILE_NAME"
 
           curl -v -u ${NEXUS_USER}:${NEXUS_PASS} \
             --upload-file "$WAR_FILE" \
-            "${NEXUS_URL}/repository/${NEXUS_REPO}/onlinebookstore-${VERSION}.war"
+            "${NEXUS_URL}/repository/${NEXUS_REPO}/${FILE_NAME}"
 
-          echo "WAR uploaded successfully!"
+          echo "✅ WAR uploaded successfully!"
 
-      # ------------------------
-      #  DOWNLOAD LATEST WAR → DEPLOY TO TOMCAT
-      # ------------------------
-      - name: 🚀 Deploy WAR to Tomcat Server
-        env:
-          NEXUS_USER: ${{ secrets.NEXUS_USER }}
-          NEXUS_PASS: ${{ secrets.NEXUS_PASS }}
-          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
-          TOMCAT_PASS: ${{ secrets.TOMCAT_PASS }}
+      - name: ⬇️ Download Latest WAR from RAW Nexus (HTML Scraping FIX)
         run: |
           set -e
-
           echo "🔍 Searching RAW repo for latest WAR…"
 
-          DOWNLOAD_URL=$(curl -s -u ${NEXUS_USER}:${NEXUS_PASS} \
-             "${NEXUS_URL}/service/rest/v1/search/assets?repository=${NEXUS_REPO}" \
-             | grep -oP '"downloadUrl"\s*:\s*"[^"]*onlinebookstore-[0-9.]+' \
-             | tail -1 | cut -d'"' -f4 )
+          LATEST_WAR=$(curl -s "${NEXUS_URL}/repository/${NEXUS_REPO}/" \
+            | grep -oP "${ARTIFACT_NAME}-[0-9\.]+\.war" \
+            | sort -V \
+            | tail -1)
 
-          if [[ -z "$DOWNLOAD_URL" ]]; then
+          if [[ -z "$LATEST_WAR" ]]; then
             echo "❌ No WAR found in RAW Nexus repo!"
             exit 1
           fi
 
-          echo "⬇️ Downloading WAR: $DOWNLOAD_URL"
-          curl -u ${NEXUS_USER}:${NEXUS_PASS} -O "$DOWNLOAD_URL"
-          WAR_FILE=$(basename "$DOWNLOAD_URL")
+          echo "📦 Latest WAR found: $LATEST_WAR"
 
-          echo "🧹 Cleaning previous deployment..."
-          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} \
-            "${TOMCAT_URL}/undeploy?path=/onlinebookstore" || true
+          FULL_URL="${NEXUS_URL}/repository/${NEXUS_REPO}/${LATEST_WAR}"
 
-          echo "🚀 Deploying new WAR..."
-          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} \
-            --upload-file "$WAR_FILE" \
-            "${TOMCAT_URL}/deploy?path=/onlinebookstore&update=true"
+          echo "⬇️ Downloading: $FULL_URL"
+          curl -u ${NEXUS_USER}:${NEXUS_PASS} -O "$FULL_URL"
 
-          echo "Deployment completed."
+          echo "Downloaded WAR file: $LATEST_WAR"
 
-      # ------------------------
-      #  VERIFY DEPLOYMENT
-      # ------------------------
-      - name: 🔎 Verify App Deployment
+      - name: 🚀 Deploy WAR to Tomcat
         run: |
-          APP_URL="http://52.2.192.208:8080/onlinebookstore/"
+          set -e
+          APP_NAME=${ARTIFACT_NAME}
 
-          echo "⏳ Waiting 60s for Tomcat to finish deployment..."
-          sleep 60
+          echo "🧹 Undeploying old version..."
+          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} \
+            "${TOMCAT_URL}/undeploy?path=/${APP_NAME}" || true
+          sleep 5
 
-          STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$APP_URL")
+          echo "🚀 Deploying new WAR to Tomcat..."
+          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} \
+            --upload-file "${LATEST_WAR}" \
+            "${TOMCAT_URL}/deploy?path=/${APP_NAME}&update=true"
 
-          if [ "$STATUS" == "200" ]; then
-            echo "✅ App is LIVE at: $APP_URL"
+          echo "✅ Deployment completed!"
+
+      - name: 🔎 Verify Deployment
+        run: |
+          APP_URL="http://52.2.192.208:8080/${ARTIFACT_NAME}/"
+          echo "⏳ Waiting for app to come online..."
+          sleep 30
+
+          STATUS=$(curl -m 20 -o /dev/null -s -w "%{http_code}" "$APP_URL")
+
+          if [ "$STATUS" -eq 200 ]; then
+            echo "✅ Application is LIVE at: $APP_URL"
           else
-            echo "❌ Deployment failed. Status: $STATUS"
+            echo "❌ Deployment failed! HTTP Status: $STATUS"
             exit 1
           fi
-
-          echo "🎉 Deployment Verified Successfully!"
