@@ -1,11 +1,29 @@
-FROM tomcat:9.0-jdk17-temurin
+# -------------------------------------------
+# STAGE 1 — Build Java App
+# -------------------------------------------
+FROM maven:3.9.6-eclipse-temurin-17 AS builder
 
-# Remove default ROOT app
-RUN rm -rf /usr/local/tomcat/webapps/*
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
 
-# Copy WAR file built by Maven
-COPY target/onlinebookstore.war /usr/local/tomcat/webapps/ROOT.war
+WORKDIR /app
+
+# Clone your repository
+RUN git clone https://github.com/KishanGollamudi/onlinebookstore.git .
+
+# Build the project
+RUN mvn clean package -DskipTests
+
+
+# -------------------------------------------
+# STAGE 2 — Lightweight Runtime
+# -------------------------------------------
+FROM eclipse-temurin:17-jre
+
+WORKDIR /app
+
+# Copy built JAR
+COPY --from=builder /app/target/*.jar app.jar
 
 EXPOSE 8080
 
-CMD ["catalina.sh", "run"]
+ENTRYPOINT ["java", "-jar", "app.jar"]
