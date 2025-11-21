@@ -1,8 +1,8 @@
-name: CI/CD Pipeline - Maven → SonarQube → Nexus → EC2 SSH Deploy
+name: CI/CD Pipeline - Maven → SonarQube → RAW Nexus → Tomcat
 
 on:
   push:
-    branches:
+    branches: 
       - main
   workflow_dispatch:
 
@@ -15,21 +15,26 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       NEXUS_URL: http://52.2.192.208:8081
-      NEXUS_REPO: maven-releases
-      NEXUS_GROUP: com/app/onlinebookstore
-      NEXUS_ARTIFACT: onlinebookstore
+      NEXUS_REPO: java  # RAW repo name
+
+      TOMCAT_URL: http://52.2.192.208:8080/manager/text
 
     steps:
-      # ---------------- CHECKOUT ----------------
-      - name: 📦 Checkout Source Code
+
+      # ------------------------
+      #  CHECKOUT
+      # ------------------------
+      - name: 📦 Checkout Repository
         uses: actions/checkout@v4
 
-      # ---------------- JAVA SETUP ----------------
+      # ------------------------
+      #  JAVA
+      # ------------------------
       - name: ☕ Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: 17
 
       - name: 🧰 Cache Maven Dependencies
         uses: actions/cache@v4
@@ -39,8 +44,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-maven-
 
-      # ---------------- SONARQUBE ANALYSIS ----------------
-      - name: 🔍 SonarQube Analysis
+      # ------------------------
+      #  SONARQUBE
+      # ------------------------
+      - name: 🔍 SonarQube Code Analysis
         run: |
           mvn clean verify sonar:sonar \
             -DskipTests \
@@ -48,15 +55,19 @@ jobs:
             -Dsonar.host.url=${SONAR_HOST_URL} \
             -Dsonar.login=${SONAR_TOKEN}
 
-      # ---------------- BUILD WAR ----------------
-      - name: ⚙️ Build WAR File
+      # ------------------------
+      #  BUILD WAR
+      # ------------------------
+      - name: ⚙️ Build WAR Package
         run: |
           mvn clean package -DskipTests
-          echo "WAR Generated:"
+          echo "WAR file created:"
           ls -lh target/*.war
 
-      # ---------------- UPLOAD TO NEXUS ----------------
-      - name: ⬆️ Upload WAR to Nexus
+      # ------------------------
+      #  UPLOAD TO NEXUS (RAW HOSTED)
+      # ------------------------
+      - name: ⬆️ Upload WAR to Nexus RAW Repo
         env:
           NEXUS_USER: ${{ secrets.NEXUS_USER }}
           NEXUS_PASS: ${{ secrets.NEXUS_PASS }}
@@ -65,37 +76,35 @@ jobs:
           WAR_FILE=$(ls target/*.war | head -1)
           VERSION="0.0.${{ github.run_number }}"
 
-          echo "📦 Uploading $WAR_FILE to Nexus as version $VERSION ..."
-          curl -u ${NEXUS_USER}:${NEXUS_PASS} \
+          echo "Uploading $WAR_FILE to RAW Nexus Repo..."
+
+          curl -v -u ${NEXUS_USER}:${NEXUS_PASS} \
             --upload-file "$WAR_FILE" \
-            "${NEXUS_URL}/repository/${NEXUS_REPO}/${NEXUS_GROUP}/${NEXUS_ARTIFACT}/${VERSION}/${NEXUS_ARTIFACT}-${VERSION}.war"
+            "${NEXUS_URL}/repository/${NEXUS_REPO}/onlinebookstore-${VERSION}.war"
 
-          echo "✅ Uploaded successfully!"
+          echo "WAR uploaded successfully!"
 
-      # ---------------- EC2 SSH DEPLOYMENT ----------------
-      - name: 🔐 Setup SSH Key for EC2
-        run: |
-          echo "${{ secrets.EC2_SSH_KEY }}" > ec2_key.pem
-          chmod 600 ec2_key.pem
-
-      - name: 🚀 Deploy WAR to EC2 Server via SSH
+      # ------------------------
+      #  DOWNLOAD LATEST WAR → DEPLOY TO TOMCAT
+      # ------------------------
+      - name: 🚀 Deploy WAR to Tomcat Server
         env:
-          EC2_USER: ${{ secrets.EC2_USER }}
-          EC2_HOST: ${{ secrets.EC2_HOST }}
           NEXUS_USER: ${{ secrets.NEXUS_USER }}
           NEXUS_PASS: ${{ secrets.NEXUS_PASS }}
+          TOMCAT_USER: ${{ secrets.TOMCAT_USER }}
+          TOMCAT_PASS: ${{ secrets.TOMCAT_PASS }}
         run: |
           set -e
 
-          echo "🔍 Fetching latest WAR from Nexus..."
+          echo "🔍 Searching RAW repo for latest WAR…"
 
           DOWNLOAD_URL=$(curl -s -u ${NEXUS_USER}:${NEXUS_PASS} \
-            "${NEXUS_URL}/service/rest/v1/search/assets?repository=${NEXUS_REPO}" \
-            | grep -oP '"downloadUrl"\s*:\s*"[^"]*onlinebookstore-[0-9.]+\.war' \
-            | tail -1 | cut -d'"' -f4)
+             "${NEXUS_URL}/service/rest/v1/search/assets?repository=${NEXUS_REPO}" \
+             | grep -oP '"downloadUrl"\s*:\s*"[^"]*onlinebookstore-[0-9.]+' \
+             | tail -1 | cut -d'"' -f4 )
 
-          if [ -z "$DOWNLOAD_URL" ]; then
-            echo "❌ No WAR found in Nexus!"
+          if [[ -z "$DOWNLOAD_URL" ]]; then
+            echo "❌ No WAR found in RAW Nexus repo!"
             exit 1
           fi
 
@@ -103,33 +112,34 @@ jobs:
           curl -u ${NEXUS_USER}:${NEXUS_PASS} -O "$DOWNLOAD_URL"
           WAR_FILE=$(basename "$DOWNLOAD_URL")
 
-          echo "📡 Copying WAR to EC2..."
-          scp -o StrictHostKeyChecking=no -i ec2_key.pem "$WAR_FILE" \
-            ${EC2_USER}@${EC2_HOST}:/tmp/
+          echo "🧹 Cleaning previous deployment..."
+          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} \
+            "${TOMCAT_URL}/undeploy?path=/onlinebookstore" || true
 
-          echo "📦 Deploying WAR on EC2 Tomcat..."
-          ssh -o StrictHostKeyChecking=no -i ec2_key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
-            sudo systemctl stop tomcat || true
-            sudo rm -rf /opt/tomcat/webapps/onlinebookstore*
-            sudo mv /tmp/onlinebookstore-*.war /opt/tomcat/webapps/onlinebookstore.war
-            sudo systemctl start tomcat
-            echo "🚀 Tomcat restarted and WAR deployed!"
-          EOF
+          echo "🚀 Deploying new WAR..."
+          curl -u ${TOMCAT_USER}:${TOMCAT_PASS} \
+            --upload-file "$WAR_FILE" \
+            "${TOMCAT_URL}/deploy?path=/onlinebookstore&update=true"
 
-      # ---------------- VERIFY DEPLOYMENT ----------------
-      - name: 🔎 Verify Application Deployment
+          echo "Deployment completed."
+
+      # ------------------------
+      #  VERIFY DEPLOYMENT
+      # ------------------------
+      - name: 🔎 Verify App Deployment
         run: |
-          echo "⏳ Waiting for Tomcat to deploy WAR..."
-          sleep 40
+          APP_URL="http://52.2.192.208:8080/onlinebookstore/"
 
-          APP_URL="http://${{ secrets.EC2_HOST }}:8080/onlinebookstore/"
-          STATUS=$(curl -m 15 -o /dev/null -s -w "%{http_code}" "$APP_URL")
+          echo "⏳ Waiting 60s for Tomcat to finish deployment..."
+          sleep 60
 
-          echo "HTTP Response Code: $STATUS"
+          STATUS=$(curl -o /dev/null -s -w "%{http_code}" "$APP_URL")
 
-          if [ "$STATUS" -eq 200 ]; then
-              echo "✅ Deployment successful & app is live!"
+          if [ "$STATUS" == "200" ]; then
+            echo "✅ App is LIVE at: $APP_URL"
           else
-              echo "❌ App did not respond with 200 OK"
-              exit 1
+            echo "❌ Deployment failed. Status: $STATUS"
+            exit 1
           fi
+
+          echo "🎉 Deployment Verified Successfully!"
