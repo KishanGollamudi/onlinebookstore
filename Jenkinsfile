@@ -2,17 +2,14 @@ pipeline {
     agent any
 
     environment {
-        // ===== SonarQube =====
+        // ---- URLs ----
         SONARQUBE_URL = 'http://18.207.183.120:9000'
+        NEXUS_REPO    = 'http://44.198.192.25:8081'
 
-        // ===== Docker =====
+        // ---- App details ----
+        APP_NAME     = 'onlinebookstore'
         DOCKER_IMAGE = 'kishangollamudi/onlinebookstore'
-        VERSION      = "${env.BUILD_NUMBER}"
-
-        // ===== Ansible =====
-        ANSIBLE_DIR  = '/home/ubuntu/ansible'
-        INVENTORY    = '/home/ubuntu/ansible/inventory.ini'
-        DEPLOY_PLAYBOOK = '/home/ubuntu/ansible/deploy-app.yml'
+        VERSION      = "${BUILD_NUMBER}"
     }
 
     tools {
@@ -23,30 +20,27 @@ pipeline {
 
         stage('Checkout') {
             steps {
-                echo 'Checking out source code...'
                 checkout scm
             }
         }
 
         stage('Build & Test') {
             steps {
-                echo 'Building application with Maven...'
                 sh 'mvn clean package'
             }
             post {
                 always {
-                    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+                    junit '**/target/surefire-reports/*.xml'
                 }
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                echo 'Running SonarQube analysis...'
                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
                     sh """
                         mvn sonar:sonar \
-                        -Dsonar.projectKey=onlinebookstore \
+                        -Dsonar.projectKey=${APP_NAME} \
                         -Dsonar.host.url=${SONARQUBE_URL} \
                         -Dsonar.login=${SONAR_TOKEN}
                     """
@@ -54,17 +48,16 @@ pipeline {
             }
         }
 
-        stage('Upload to Nexus') {
+        stage('Upload to Nexus (Snapshots)') {
             steps {
-                echo 'Uploading artifact to Nexus...'
                 withCredentials([usernamePassword(
-                    credentialsId: 'nexus',
+                    credentialsId: 'nexus-creds',
                     usernameVariable: 'NEXUS_USER',
                     passwordVariable: 'NEXUS_PASS'
                 )]) {
 
                     sh '''
-                        cat <<EOF > settings.xml
+cat <<EOF > settings.xml
 <settings>
   <servers>
     <server>
@@ -84,20 +77,17 @@ EOF
 
         stage('Build Docker Image') {
             steps {
-                echo 'Building Docker image...'
                 sh "docker build -t ${DOCKER_IMAGE}:${VERSION} ."
             }
         }
 
         stage('Push Docker Image to DockerHub') {
             steps {
-                echo 'Pushing Docker image to Docker Hub...'
                 withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-user',
+                    credentialsId: 'dockerhub-creds',
                     usernameVariable: 'DH_USER',
                     passwordVariable: 'DH_PASS'
                 )]) {
-
                     sh """
                         echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
                         docker push ${DOCKER_IMAGE}:${VERSION}
@@ -108,28 +98,28 @@ EOF
             }
         }
 
-        stage('Deploy to Docker Host (via Ansible)') {
+        stage('Deploy Container (Docker Host)') {
             steps {
-                echo 'Triggering Ansible deployment...'
                 sh """
-                    ansible-playbook \
-                      -i ${INVENTORY} \
-                      ${DEPLOY_PLAYBOOK}
+                    docker rm -f ${APP_NAME} || true
+                    docker run -d \
+                      --name ${APP_NAME} \
+                      -p 8080:8080 \
+                      ${DOCKER_IMAGE}:latest
                 """
             }
         }
     }
 
     post {
-        always {
-            echo 'Cleaning workspace...'
-            cleanWs()
-        }
         success {
-            echo '🎉 CI/CD pipeline completed successfully!'
+            echo "✅ CI/CD Pipeline completed successfully!"
         }
         failure {
-            echo '❌ Pipeline failed. Check logs above.'
+            echo "❌ Pipeline failed. Check logs."
+        }
+        always {
+            cleanWs()
         }
     }
 }
