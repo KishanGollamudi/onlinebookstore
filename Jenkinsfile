@@ -2,46 +2,46 @@ pipeline {
     agent any
 
     environment {
-        SONARQUBE_URL = 'http://sonar:9000'
-        NEXUS_URL     = 'http://nexus:8081'
+        SONARQUBE_URL = 'http://18.207.183.120:9000'
+        NEXUS_URL     = 'http://44.198.192.25:8081'
         DOCKER_IMAGE  = "kishangollamudi/onlinebookstore"
-        VERSION       = "${env.BUILD_NUMBER}"
+        VERSION       = "${BUILD_NUMBER}"
     }
 
     tools {
-        maven 'Maven-3'
+        maven 'maven3'
+        jdk 'jdk17'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                echo "Checking out code..."
-                checkout scm
+                checkout([
+                    $class: 'GitSCM',
+                    branches: [[name: '*/main']],
+                    userRemoteConfigs: [[
+                        url: 'https://github.com/KishanGollamudi/onlinebookstore.git',
+                        credentialsId: 'github-creds'
+                    ]]
+                ])
             }
         }
 
         stage('Build & Test') {
             steps {
-                echo "Building with Maven..."
                 sh 'mvn clean package'
-            }
-            post {
-                always {
-                    junit testResults: '**/target/surefire-reports/*.xml', allowEmptyResults: true
-                }
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                echo "Running SonarQube..."
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
                     sh """
-                        mvn sonar:sonar \
-                        -Dsonar.projectKey=onlinebookstore \
-                        -Dsonar.host.url=${SONARQUBE_URL} \
-                        -Dsonar.login=${SONAR_TOKEN}
+                      mvn sonar:sonar \
+                      -Dsonar.projectKey=onlinebookstore \
+                      -Dsonar.host.url=${SONARQUBE_URL} \
+                      -Dsonar.login=${SONAR_TOKEN}
                     """
                 }
             }
@@ -49,10 +49,14 @@ pipeline {
 
         stage('Upload to Nexus') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'nexus', passwordVariable: 'NEXUS_PASS', usernameVariable: 'NEXUS_USER')]) {
-                    
+                withCredentials([usernamePassword(
+                    credentialsId: 'nexus-creds',
+                    usernameVariable: 'NEXUS_USER',
+                    passwordVariable: 'NEXUS_PASS'
+                )]) {
+
                     sh '''
-                        cat <<EOF > settings.xml
+cat <<EOF > settings.xml
 <settings>
   <servers>
     <server>
@@ -72,32 +76,32 @@ EOF
 
         stage('Build Docker Image') {
             steps {
-                echo "Building Docker image..."
                 script {
                     docker.build("${DOCKER_IMAGE}:${VERSION}")
                 }
             }
         }
 
-        stage('Push to DockerHub') {
+        stage('Push Docker Image to DockerHub') {
             steps {
-                echo "Pushing image to DockerHub..."
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-user', usernameVariable: 'DH_USER', passwordVariable: 'DH_PASS')]) {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DH_USER',
+                    passwordVariable: 'DH_PASS'
+                )]) {
                     sh """
-                        echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
-                        docker push ${DOCKER_IMAGE}:${VERSION}
-                        docker tag ${DOCKER_IMAGE}:${VERSION} ${DOCKER_IMAGE}:latest
-                        docker push ${DOCKER_IMAGE}:latest
+                      echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
+                      docker push ${DOCKER_IMAGE}:${VERSION}
+                      docker tag ${DOCKER_IMAGE}:${VERSION} ${DOCKER_IMAGE}:latest
+                      docker push ${DOCKER_IMAGE}:latest
                     """
                 }
             }
         }
-
     }
 
     post {
         always {
-            echo "Cleaning workspace..."
             cleanWs()
         }
     }
