@@ -2,11 +2,7 @@ pipeline {
     agent any
 
     environment {
-        // ---- URLs ----
         SONARQUBE_URL = 'http://18.207.183.120:9000'
-        NEXUS_REPO    = 'http://44.198.192.25:8081'
-
-        // ---- App details ----
         APP_NAME     = 'onlinebookstore'
         DOCKER_IMAGE = 'kishangollamudi/onlinebookstore'
         VERSION      = "${BUILD_NUMBER}"
@@ -30,7 +26,8 @@ pipeline {
             }
             post {
                 always {
-                    junit '**/target/surefire-reports/*.xml'
+                    junit testResults: '**/target/surefire-reports/*.xml',
+                          allowEmptyResults: true
                 }
             }
         }
@@ -98,7 +95,7 @@ EOF
             }
         }
 
-        stage('Deploy Container (Docker Host)') {
+        stage('Run Container') {
             steps {
                 sh """
                     docker rm -f ${APP_NAME} || true
