@@ -75,7 +75,9 @@ EOF
 
         stage('Build Docker Image') {
             steps {
-                sh 'docker build -t ${DOCKER_IMAGE}:${VERSION} .'
+                sh """
+                    docker build -t ${DOCKER_IMAGE}:${VERSION} .
+                """
             }
         }
 
@@ -86,23 +88,22 @@ EOF
                     usernameVariable: 'DH_USER',
                     passwordVariable: 'DH_PASS'
                 )]) {
-                    sh '''
+                    sh """
                         echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
                         docker push ${DOCKER_IMAGE}:${VERSION}
                         docker tag ${DOCKER_IMAGE}:${VERSION} ${DOCKER_IMAGE}:latest
                         docker push ${DOCKER_IMAGE}:latest
-                    '''
+                    """
                 }
             }
         }
 
         stage('Deploy to Docker Host (via Ansible)') {
             steps {
-                sh '''
-                    ansible-playbook \
-                      -i /home/ubuntu/ansible/inventory.ini \
-                      /home/ubuntu/ansible/deploy-app.yml
-                '''
+                sh """
+                    ssh -o StrictHostKeyChecking=no ubuntu@44.197.118.254 \
+                    'cd ~/ansible && bash -lc "ansible-playbook -i inventory.ini deploy-app.yml"'
+                """
             }
         }
     }
