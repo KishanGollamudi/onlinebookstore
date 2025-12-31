@@ -3,9 +3,9 @@ pipeline {
 
     environment {
         SONARQUBE_URL = 'http://18.207.183.120:9000'
-        APP_NAME     = 'onlinebookstore'
-        DOCKER_IMAGE = 'kishangollamudi/onlinebookstore'
-        VERSION      = "${BUILD_NUMBER}"
+        APP_NAME      = 'onlinebookstore'
+        DOCKER_IMAGE  = 'kishangollamudi/onlinebookstore'
+        VERSION       = "${env.BUILD_NUMBER}"
     }
 
     tools {
@@ -34,13 +34,16 @@ pipeline {
 
         stage('SonarQube Analysis') {
             steps {
-                withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
-                    sh """
+                withCredentials([string(
+                    credentialsId: 'sonarqube-token',
+                    variable: 'SONAR_TOKEN'
+                )]) {
+                    sh '''
                         mvn sonar:sonar \
-                        -Dsonar.projectKey=${APP_NAME} \
-                        -Dsonar.host.url=${SONARQUBE_URL} \
-                        -Dsonar.login=${SONAR_TOKEN}
-                    """
+                        -Dsonar.projectKey=onlinebookstore \
+                        -Dsonar.host.url=http://18.207.183.120:9000 \
+                        -Dsonar.login=$SONAR_TOKEN
+                    '''
                 }
             }
         }
@@ -52,7 +55,6 @@ pipeline {
                     usernameVariable: 'NEXUS_USER',
                     passwordVariable: 'NEXUS_PASS'
                 )]) {
-
                     sh '''
 cat <<EOF > settings.xml
 <settings>
@@ -66,7 +68,6 @@ cat <<EOF > settings.xml
 </settings>
 EOF
                     '''
-
                     sh 'mvn deploy -DskipTests -s settings.xml'
                 }
             }
@@ -74,7 +75,7 @@ EOF
 
         stage('Build Docker Image') {
             steps {
-                sh "docker build -t ${DOCKER_IMAGE}:${VERSION} ."
+                sh 'docker build -t ${DOCKER_IMAGE}:${VERSION} .'
             }
         }
 
@@ -85,28 +86,26 @@ EOF
                     usernameVariable: 'DH_USER',
                     passwordVariable: 'DH_PASS'
                 )]) {
-                    sh """
-                        echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
+                    sh '''
+                        echo "$DH_PASS" | docker login -u "$DH_USER" --password-stdin
                         docker push ${DOCKER_IMAGE}:${VERSION}
                         docker tag ${DOCKER_IMAGE}:${VERSION} ${DOCKER_IMAGE}:latest
                         docker push ${DOCKER_IMAGE}:latest
-                    """
+                    '''
                 }
             }
         }
 
-        stage('Run Container') {
+        stage('Deploy to Docker Host (via Ansible)') {
             steps {
                 sh '''
-                docker rm -f onlinebookstore || true
-                docker run -d \
-                --name onlinebookstore \
-                -p 8081:8080 \
-                kishangollamudi/onlinebookstore:latest
-            '''
+                    ansible-playbook \
+                      -i /home/ubuntu/ansible/inventory.ini \
+                      /home/ubuntu/ansible/deploy-app.yml
+                '''
             }
         }
-
+    }
 
     post {
         success {
