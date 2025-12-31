@@ -2,46 +2,53 @@ pipeline {
     agent any
 
     environment {
+        // ===== SonarQube =====
         SONARQUBE_URL = 'http://18.207.183.120:9000'
-        NEXUS_URL     = 'http://44.198.192.25:8081'
-        DOCKER_IMAGE  = "kishangollamudi/onlinebookstore"
-        VERSION       = "${BUILD_NUMBER}"
+
+        // ===== Docker =====
+        DOCKER_IMAGE = 'kishangollamudi/onlinebookstore'
+        VERSION      = "${env.BUILD_NUMBER}"
+
+        // ===== Ansible =====
+        ANSIBLE_DIR  = '/home/ubuntu/ansible'
+        INVENTORY    = '/home/ubuntu/ansible/inventory.ini'
+        DEPLOY_PLAYBOOK = '/home/ubuntu/ansible/deploy-app.yml'
     }
 
     tools {
-        maven 'maven3'
-        jdk 'jdk17'
+        maven 'Maven-3'
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                checkout([
-                    $class: 'GitSCM',
-                    branches: [[name: '*/master']],
-                    userRemoteConfigs: [[
-                        url: 'https://github.com/KishanGollamudi/onlinebookstore.git',
-                        credentialsId: 'github-creds'
-                    ]]
-                ])
+                echo 'Checking out source code...'
+                checkout scm
             }
         }
 
         stage('Build & Test') {
             steps {
+                echo 'Building application with Maven...'
                 sh 'mvn clean package'
+            }
+            post {
+                always {
+                    junit allowEmptyResults: true, testResults: '**/target/surefire-reports/*.xml'
+                }
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
+                echo 'Running SonarQube analysis...'
                 withCredentials([string(credentialsId: 'sonarqube-token', variable: 'SONAR_TOKEN')]) {
                     sh """
-                      mvn sonar:sonar \
-                      -Dsonar.projectKey=onlinebookstore \
-                      -Dsonar.host.url=${SONARQUBE_URL} \
-                      -Dsonar.login=${SONAR_TOKEN}
+                        mvn sonar:sonar \
+                        -Dsonar.projectKey=onlinebookstore \
+                        -Dsonar.host.url=${SONARQUBE_URL} \
+                        -Dsonar.login=${SONAR_TOKEN}
                     """
                 }
             }
@@ -49,14 +56,15 @@ pipeline {
 
         stage('Upload to Nexus') {
             steps {
+                echo 'Uploading artifact to Nexus...'
                 withCredentials([usernamePassword(
-                    credentialsId: 'nexus-creds',
+                    credentialsId: 'nexus',
                     usernameVariable: 'NEXUS_USER',
                     passwordVariable: 'NEXUS_PASS'
                 )]) {
 
                     sh '''
-cat <<EOF > settings.xml
+                        cat <<EOF > settings.xml
 <settings>
   <servers>
     <server>
@@ -76,33 +84,52 @@ EOF
 
         stage('Build Docker Image') {
             steps {
-                script {
-                    docker.build("${DOCKER_IMAGE}:${VERSION}")
-                }
+                echo 'Building Docker image...'
+                sh "docker build -t ${DOCKER_IMAGE}:${VERSION} ."
             }
         }
 
         stage('Push Docker Image to DockerHub') {
             steps {
+                echo 'Pushing Docker image to Docker Hub...'
                 withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-creds',
+                    credentialsId: 'dockerhub-user',
                     usernameVariable: 'DH_USER',
                     passwordVariable: 'DH_PASS'
                 )]) {
+
                     sh """
-                      echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
-                      docker push ${DOCKER_IMAGE}:${VERSION}
-                      docker tag ${DOCKER_IMAGE}:${VERSION} ${DOCKER_IMAGE}:latest
-                      docker push ${DOCKER_IMAGE}:latest
+                        echo ${DH_PASS} | docker login -u ${DH_USER} --password-stdin
+                        docker push ${DOCKER_IMAGE}:${VERSION}
+                        docker tag ${DOCKER_IMAGE}:${VERSION} ${DOCKER_IMAGE}:latest
+                        docker push ${DOCKER_IMAGE}:latest
                     """
                 }
+            }
+        }
+
+        stage('Deploy to Docker Host (via Ansible)') {
+            steps {
+                echo 'Triggering Ansible deployment...'
+                sh """
+                    ansible-playbook \
+                      -i ${INVENTORY} \
+                      ${DEPLOY_PLAYBOOK}
+                """
             }
         }
     }
 
     post {
         always {
+            echo 'Cleaning workspace...'
             cleanWs()
+        }
+        success {
+            echo '🎉 CI/CD pipeline completed successfully!'
+        }
+        failure {
+            echo '❌ Pipeline failed. Check logs above.'
         }
     }
 }
