@@ -97,16 +97,16 @@ EOF
 
         stage('Run Container') {
             steps {
-                sh """
-                    docker rm -f ${APP_NAME} || true
-                    docker run -d \
-                      --name ${APP_NAME} \
-                      -p 8080:8080 \
-                      ${DOCKER_IMAGE}:latest
-                """
+                sh '''
+                docker rm -f onlinebookstore || true
+                docker run -d \
+                --name onlinebookstore \
+                -p 8081:8080 \
+                kishangollamudi/onlinebookstore:latest
+            '''
             }
         }
-    }
+
 
     post {
         success {
