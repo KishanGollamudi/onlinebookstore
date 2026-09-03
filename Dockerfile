@@ -1,29 +1,32 @@
-# -------------------------------------------
-# STAGE 1 — Build Java App (Maven)
-# -------------------------------------------
-FROM maven:3.9.6-eclipse-temurin-17 AS builder
+# syntax=docker/dockerfile:1
 
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+# Build the WAR from the source in the Docker build context. This deliberately
+# does not clone a repository so the image always contains the code being built.
+FROM maven:3.9.9-eclipse-temurin-17 AS build
 
-WORKDIR /app
+WORKDIR /workspace
 
-# Clone your repository
-RUN git clone https://github.com/KishanGollamudi/onlinebookstore.git .
+# Keep dependency downloads cached when only application sources change.
+COPY pom.xml ./
+RUN mvn --batch-mode --no-transfer-progress dependency:go-offline
 
-# Build WAR
-RUN mvn clean package -DskipTests
+COPY src ./src
+COPY WebContent ./WebContent
+RUN mvn --batch-mode --no-transfer-progress clean package -DskipTests
 
 
-# -------------------------------------------
-# STAGE 2 — Tomcat Runtime
-# -------------------------------------------
-FROM tomcat:10.1-jdk17
+# This application uses javax.servlet, which Tomcat 9 supports. Tomcat 10+
+# requires the incompatible jakarta.servlet namespace.
+FROM tomcat:9.0-jdk17-temurin
 
-# Remove default ROOT app
-RUN rm -rf /usr/local/tomcat/webapps/*
+RUN rm -rf /usr/local/tomcat/webapps/* \
+    && groupadd --system tomcat \
+    && useradd --system --gid tomcat --home-dir /usr/local/tomcat --shell /usr/sbin/nologin tomcat \
+    && chown -R tomcat:tomcat /usr/local/tomcat
 
-# Copy your WAR as ROOT.war
-COPY --from=builder /app/target/*.war /usr/local/tomcat/webapps/ROOT.war
+COPY --from=build --chown=tomcat:tomcat /workspace/target/onlinebookstore.war /usr/local/tomcat/webapps/ROOT.war
+
+USER tomcat
 
 EXPOSE 8080
 

@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+.settings
+.classpath
+.project
+.factorypath
+target
+*.log
+*.md
+Jenkinsfile
+buildspec.yaml
+appspec.yaml
+Procfile
+scripts
+setup
