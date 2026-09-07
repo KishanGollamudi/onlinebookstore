@@ -43,6 +43,7 @@ pipeline {
                     pwd
 
                     echo "=== Checking required files ==="
+
                     test -f Dockerfile
                     test -f compose.yaml
                     test -f setup/mysql-init.sql
@@ -143,23 +144,56 @@ pipeline {
                 sh '''
                     set -e
 
-                    echo "=== Waiting for MySQL ==="
+                    echo "=== MySQL container status ==="
 
-                    docker compose exec -T db \
-                        mysqladmin \
-                        ping \
-                        -h 127.0.0.1 \
-                        -uroot \
-                        -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
-                        --silent
+                    docker compose ps db
 
-                    echo "MySQL is responding."
+                    echo "=== Waiting for MySQL to be healthy ==="
 
-                    echo "=== Checking database tables ==="
+                    for i in $(seq 1 30); do
+
+                        STATUS=$(docker compose ps --format '{{.Status}}' db)
+
+                        echo "Attempt ${i}: ${STATUS}"
+
+                        if echo "${STATUS}" | grep -qi "healthy"; then
+                            echo "MySQL is healthy."
+                            break
+                        fi
+
+                        if [ "${i}" -eq 30 ]; then
+                            echo "ERROR: MySQL did not become healthy."
+
+                            docker compose logs db
+
+                            exit 1
+                        fi
+
+                        sleep 2
+                    done
+
+                    echo "=== Testing MySQL connection ==="
 
                     docker compose exec -T db \
                         mysql \
-                        -h 127.0.0.1 \
+                        -uroot \
+                        -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
+                        -e "SELECT 1;"
+
+                    echo "MySQL connection successful."
+
+                    echo "=== Checking onlinebookstore database ==="
+
+                    docker compose exec -T db \
+                        mysql \
+                        -uroot \
+                        -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
+                        -e "SHOW DATABASES;"
+
+                    echo "=== Checking tables ==="
+
+                    docker compose exec -T db \
+                        mysql \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
                         -e "USE onlinebookstore; SHOW TABLES;"
@@ -170,18 +204,21 @@ pipeline {
                         docker compose exec -T db \
                         mysql \
                         -N \
-                        -h 127.0.0.1 \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
                         -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='onlinebookstore' AND table_name IN ('books','users');"
                     )
 
+                    TABLE_COUNT=$(echo "${TABLE_COUNT}" | tr -d '[:space:]')
+
                     echo "Required table count: ${TABLE_COUNT}"
 
                     if [ "${TABLE_COUNT}" -ne 2 ]; then
                         echo "ERROR: books and users tables were not created."
+
                         echo "=== MySQL logs ==="
                         docker compose logs db
+
                         exit 1
                     fi
 
@@ -193,21 +230,23 @@ pipeline {
                         docker compose exec -T db \
                         mysql \
                         -N \
-                        -h 127.0.0.1 \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
                         -e "SELECT COUNT(*) FROM onlinebookstore.books;"
                     )
 
+                    BOOK_COUNT=$(echo "${BOOK_COUNT}" | tr -d '[:space:]')
+
                     USER_COUNT=$(
                         docker compose exec -T db \
                         mysql \
                         -N \
-                        -h 127.0.0.1 \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
                         -e "SELECT COUNT(*) FROM onlinebookstore.users;"
                     )
+
+                    USER_COUNT=$(echo "${USER_COUNT}" | tr -d '[:space:]')
 
                     echo "Books: ${BOOK_COUNT}"
                     echo "Users: ${USER_COUNT}"
