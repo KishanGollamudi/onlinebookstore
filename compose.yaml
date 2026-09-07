@@ -1,6 +1,6 @@
 services:
   db:
-    image: mysql:8.4
+    image: ${DB_IMAGE:-mysql:8.4}
     environment:
       MYSQL_DATABASE: onlinebookstore
       MYSQL_USER: bookstore
@@ -8,7 +8,6 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-bookstore-root-password}
     volumes:
       - mysql_data:/var/lib/mysql
-      - ./setup/mysql-init.sql:/docker-entrypoint-initdb.d/01-mysql-init.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -u root -p$$MYSQL_ROOT_PASSWORD --silent"]
       interval: 5s
