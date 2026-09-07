@@ -14,3 +14,5 @@ appspec.yaml
 Procfile
 scripts
 setup
+!setup/
+!setup/mysql-init.sql
