@@ -10,13 +10,15 @@ pipeline {
         booleanParam(
             name: 'RESET_DATABASE',
             defaultValue: false,
-            description: 'Delete the MySQL container and volume so mysql-init.sql runs again. Use only when database reset is required.'
+            description: 'Reset the MySQL database and recreate it from mysql-init.sql. Use only when required.'
         )
     }
 
     environment {
         APP_IMAGE = 'onlinebookstore'
+        DB_IMAGE = 'onlinebookstore-mysql'
         IMAGE_TAG = "${BUILD_NUMBER}"
+        DB_TAG = "${BUILD_NUMBER}"
     }
 
     stages {
@@ -41,14 +43,57 @@ pipeline {
                     pwd
 
                     echo "=== Checking required files ==="
+                    test -f Dockerfile
                     test -f compose.yaml
                     test -f setup/mysql-init.sql
+                    test -f deployment/mysql/Dockerfile
 
-                    echo "compose.yaml found."
-                    echo "setup/mysql-init.sql found."
+                    echo "All required files found."
 
-                    echo "=== MySQL initialization script ==="
+                    echo "=== MySQL Dockerfile ==="
+                    cat deployment/mysql/Dockerfile
+
+                    echo "=== MySQL initialization SQL ==="
                     grep -E "CREATE TABLE|INSERT IGNORE" setup/mysql-init.sql
+                '''
+            }
+        }
+
+        stage('Build MySQL Image') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=== Building custom MySQL image ==="
+
+                    docker build \
+                        --pull \
+                        -t "${DB_IMAGE}:${DB_TAG}" \
+                        -f deployment/mysql/Dockerfile \
+                        .
+
+                    echo "=== MySQL image built ==="
+
+                    docker images "${DB_IMAGE}:${DB_TAG}"
+                '''
+            }
+        }
+
+        stage('Docker Image Build') {
+            steps {
+                sh '''
+                    set -e
+
+                    echo "=== Building application image ==="
+
+                    docker build \
+                        --pull \
+                        -t "${APP_IMAGE}:${IMAGE_TAG}" \
+                        .
+
+                    echo "=== Application image built ==="
+
+                    docker images "${APP_IMAGE}:${IMAGE_TAG}"
                 '''
             }
         }
@@ -65,28 +110,10 @@ pipeline {
                     set -e
 
                     echo "=== RESET_DATABASE=true ==="
-                    echo "Stopping and removing current Compose containers..."
 
-                    docker compose down
+                    docker compose down -v --remove-orphans
 
-                    echo "Removing MySQL volume..."
-
-                    docker volume rm test-job_mysql_data || true
-
-                    echo "Database reset completed."
-                '''
-            }
-        }
-
-        stage('Docker Image Build') {
-            steps {
-                sh '''
-                    set -e
-
-                    echo "=== Building application image ==="
-
-                    docker build --pull \
-                        -t "${APP_IMAGE}:${IMAGE_TAG}" .
+                    echo "=== Database containers and volume removed ==="
                 '''
             }
         }
@@ -98,6 +125,7 @@ pipeline {
 
                     echo "=== Starting application ==="
 
+                    DB_IMAGE="${DB_IMAGE}:${DB_TAG}" \
                     IMAGE_TAG="${IMAGE_TAG}" \
                     docker compose up -d \
                         --no-build \
@@ -118,49 +146,83 @@ pipeline {
                     echo "=== Waiting for MySQL ==="
 
                     docker compose exec -T db \
+                        mysqladmin \
+                        ping \
+                        -h 127.0.0.1 \
+                        -uroot \
+                        -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
+                        --silent
+
+                    echo "MySQL is responding."
+
+                    echo "=== Checking database tables ==="
+
+                    docker compose exec -T db \
                         mysql \
+                        -h 127.0.0.1 \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
                         -e "USE onlinebookstore; SHOW TABLES;"
 
                     echo "=== Checking required tables ==="
 
-                    TABLE_COUNT=$(docker compose exec -T db \
+                    TABLE_COUNT=$(
+                        docker compose exec -T db \
                         mysql \
                         -N \
+                        -h 127.0.0.1 \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
-                        -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='onlinebookstore' AND table_name IN ('books','users');")
+                        -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='onlinebookstore' AND table_name IN ('books','users');"
+                    )
 
                     echo "Required table count: ${TABLE_COUNT}"
 
                     if [ "${TABLE_COUNT}" -ne 2 ]; then
-                        echo "ERROR: Required database tables were not created."
+                        echo "ERROR: books and users tables were not created."
+                        echo "=== MySQL logs ==="
+                        docker compose logs db
                         exit 1
                     fi
 
-                    echo "Database tables verified successfully."
+                    echo "Required tables exist."
 
                     echo "=== Checking sample data ==="
 
-                    BOOK_COUNT=$(docker compose exec -T db \
+                    BOOK_COUNT=$(
+                        docker compose exec -T db \
                         mysql \
                         -N \
+                        -h 127.0.0.1 \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
-                        -e "SELECT COUNT(*) FROM onlinebookstore.books;")
+                        -e "SELECT COUNT(*) FROM onlinebookstore.books;"
+                    )
 
-                    USER_COUNT=$(docker compose exec -T db \
+                    USER_COUNT=$(
+                        docker compose exec -T db \
                         mysql \
                         -N \
+                        -h 127.0.0.1 \
                         -uroot \
                         -p"${MYSQL_ROOT_PASSWORD:-bookstore-root-password}" \
-                        -e "SELECT COUNT(*) FROM onlinebookstore.users;")
+                        -e "SELECT COUNT(*) FROM onlinebookstore.users;"
+                    )
 
                     echo "Books: ${BOOK_COUNT}"
                     echo "Users: ${USER_COUNT}"
 
-                    echo "=== Database verification completed successfully ==="
+                    if [ "${BOOK_COUNT}" -lt 1 ]; then
+                        echo "ERROR: books table is empty."
+                        exit 1
+                    fi
+
+                    if [ "${USER_COUNT}" -lt 1 ]; then
+                        echo "ERROR: users table is empty."
+                        exit 1
+                    fi
+
+                    echo "=== DATABASE VERIFICATION PASSED ==="
                 '''
             }
         }
